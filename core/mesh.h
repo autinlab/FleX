@@ -51,7 +51,8 @@ struct Mesh
     std::vector<Vector3> m_normals;
     std::vector<Vector2> m_texcoords[2];
     std::vector<Colour> m_colours;
-
+	mutable Vector3 m_minExtents;
+	mutable Vector3 m_maxExtents;
     std::vector<uint32_t> m_indices;    
 };
 

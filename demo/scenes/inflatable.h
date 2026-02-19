@@ -94,7 +94,7 @@ public:
 			{
 				Mesh* mesh = ImportMesh(GetFilePathByPlatform(meshes[(i + y) & 1]).c_str());
 				mesh->Normalize();
-				mesh->Transform(TranslationMatrix(Point3(i*2.0f, 1.0f + y*2.0f, 1.5f)));
+				mesh->Transform(TranslationMatrix(Point3(i*2.0f, 1.0f + y * 2.0f, 1.5f)));
 
 				AddInflatable(mesh, mPressure, NvFlexMakePhase(group++, 0));
 

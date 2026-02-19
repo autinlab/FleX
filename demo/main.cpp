@@ -109,6 +109,8 @@ inline float joyAxisFilter(int value, int stick)
 SDL_GameController* g_gamecontroller = NULL;
 
 using namespace std;
+string g_cp_model = "";
+string g_cp_recipe = "";
 
 int g_screenWidth = 1280;
 int g_screenHeight = 720;
@@ -118,6 +120,10 @@ int g_numSubsteps;
 
 // a setting of -1 means Flex will use the device specified in the NVIDIA control panel
 int g_device = -1;
+int g_lod_to_use = 0;
+int g_dna_persistence = 5;
+int g_force_not_center = 0;
+int g_use_partners_properties = 0;
 char g_deviceName[256];
 bool g_vsync = true;
 
@@ -431,6 +437,8 @@ Vec3 g_lightPos;
 Vec3 g_lightDir;
 Vec3 g_lightTarget;
 
+bool g_ignore_comp = false;
+bool g_sync_mem = false;
 bool g_pause = false;
 bool g_step = false;
 bool g_capture = false;
@@ -439,10 +447,14 @@ bool g_tweakPanel = true;
 bool g_fullscreen = false;
 bool g_wireframe = false;
 bool g_debug = false;
+bool g_winding = false;
 
 bool g_emit = false;
 bool g_warmup = false;
 
+float g_mb = 47.0f;
+float g_radius = 0.0f;
+float g_scale = 1.0f / 200.0f;
 float g_windTime = 0.0f;
 float g_windFrequency = 0.1f;
 float g_windStrength = 0.0f;
@@ -550,19 +562,218 @@ vector<Emitter> g_emitters(1);	// first emitter is the camera 'gun'
 struct Rope
 {
 	std::vector<int> mIndices;
+	std::vector<int> coarseIndices;
+	int persistence;
+	int phase;
+	int ropeType;
+	int ropeOffsetIdStart;
+	int ropeInstanceIdStart;
 };
 
 vector<Rope> g_ropes;
 
 inline float sqr(float x) { return x*x; }
 
+
+#include <windows.h>
+#include <stdio.h>
+#include <conio.h>
+#include <tchar.h>
+
+/* shared memory setup*/
+float * sharedMemMouse;
+int pbstate = 0;
+HANDLE mouse_handle;
+DWORD buffer_mouse_size = sizeof(float) * 4;
+
+float * sharedMemInfo; //nbInstance, nbCurves
+HANDLE info_handle;
+DWORD buffer_info_size = sizeof(float) * 5;
+
+vector<HANDLE> handles_proteins;
+vector<float *> sharedMemBuffer_proteins;
+const int shared_buffer_size_proteins = 5120; // 5120 * 4 is max number that works for whatever reason (you may need to change this number on different systems)
+const int num_shared_buffers_proteins = 200;
+DWORD buffer_size_proteins = shared_buffer_size_proteins * sizeof(float) * 4;
+
+vector<HANDLE> handles_rotation;
+vector<float *> sharedMemBuffer_rotation;
+const int shared_buffer_size_rotation = 5120; // 5120 * 4 is max number that works for whatever reason (you may need to change this number on different systems)
+const int num_shared_buffers_rotation = 200;
+DWORD buffer_size_rotation = shared_buffer_size_rotation * sizeof(float) * 4;
+
+vector<HANDLE> handles_info;
+vector<float *> sharedMemBuffer_info;
+const int shared_buffer_size_info = 5120; // 5120 * 4 is max number that works for whatever reason (you may need to change this number on different systems)
+const int num_shared_buffers_info = 200;
+DWORD buffer_size_info = shared_buffer_size_info * sizeof(float) * 4;
+
+vector<HANDLE> handles_curves;
+vector<float *> sharedMemBuffer_curves;
+const int shared_buffer_size_curves = 5120; // 5120 * 4 is max number that works for whatever reason (you may need to change this number on different systems)
+const int num_shared_buffers_curves = 200;
+DWORD buffer_size_curves = shared_buffer_size_curves * sizeof(float) * 4;
+
+vector<HANDLE> handles_curves_info;
+vector<float *> sharedMemBuffer_curves_info;
+//const int shared_buffer_size_info = 5120; // 5120 * 4 is max number that works for whatever reason (you may need to change this number on different systems)
+//const int num_shared_buffers_info = 200;
+DWORD buffer_size_curves_info = shared_buffer_size_info * sizeof(float) * 4;
+
+vector<HANDLE> handles_curves_normal;
+vector<float *> sharedMemBuffer_curves_normal;
+//const int shared_buffer_size_normal = 5120; // 5120 * 4 is max number that works for whatever reason (you may need to change this number on different systems)
+//const int num_shared_buffers_normal = 200;
+DWORD buffer_size_curves_normal = shared_buffer_size_info * sizeof(float) * 4;
+
+vector<HANDLE> handles_particles;
+vector<float *> sharedMemBuffer_particles;
+//const int shared_buffer_size_normal = 5120; // 5120 * 4 is max number that works for whatever reason (you may need to change this number on different systems)
+//const int num_shared_buffers_normal = 200;
+DWORD buffer_size_particles = shared_buffer_size_info * sizeof(float) * 4;
+
+//maybe should do all the buffer e.g.
+//proteinInstanceInfos
+//curvecontrolPoints
+//curvecontrolNormals
+//curvecontrolInfo
+//convert the rotation here
+
+void CreateMapping(float **buffer, const char *buffer_name, HANDLE handle, int buffer_size)
+{
+	//_tprintf(TEXT("Create Mapping.\n"));
+	handle = CreateFileMapping(
+		INVALID_HANDLE_VALUE,    // use paging file
+		NULL,                    // default security
+		PAGE_READWRITE,          // read/write access
+		0,                       // maximum object size (high-order DWORD)
+		buffer_size,             // maximum object size (low-order DWORD)
+		buffer_name);            // name of mapping object
+
+	if (handle == NULL)
+	{
+		_tprintf(TEXT("Could not create file mapping object (%d).\n"),
+			GetLastError());
+		return;
+	}
+	*buffer = (float *)MapViewOfFile(handle,   // handle to map object
+		FILE_MAP_ALL_ACCESS, // read/write permission
+		0,
+		0,
+		buffer_size);
+
+	if (*buffer == NULL)
+	{
+		_tprintf(TEXT("Could not map view of file (%d).\n"),
+			GetLastError());
+
+		CloseHandle(handle);
+
+		return;
+	}
+
+	//_tprintf(TEXT("View of file is mapped.\n"));
+
+	return;
+}
+
+void CreateMappings()
+{
+	for (size_t i = 0; i < num_shared_buffers_proteins; i++)
+	{
+		std::string buffer_name = std::string("protein_buffer") + std::to_string(i);
+		const char *buffer_name_c_str = buffer_name.c_str();
+		CreateMapping(&sharedMemBuffer_proteins[i], buffer_name_c_str, handles_proteins[i], buffer_size_proteins);
+		
+		buffer_name = std::string("rotation_buffer") + std::to_string(i);
+		buffer_name_c_str = buffer_name.c_str();
+		CreateMapping(&sharedMemBuffer_rotation[i], buffer_name_c_str, handles_rotation[i], buffer_size_proteins);
+		
+		buffer_name = std::string("info_buffer") + std::to_string(i);
+		buffer_name_c_str = buffer_name.c_str();
+		CreateMapping(&sharedMemBuffer_info[i], buffer_name_c_str, handles_info[i], buffer_size_proteins);
+		
+		buffer_name = std::string("curves_buffer") + std::to_string(i);
+		buffer_name_c_str = buffer_name.c_str();
+		CreateMapping(&sharedMemBuffer_curves[i], buffer_name_c_str, handles_curves[i], buffer_size_curves);
+		
+		buffer_name = std::string("curves_buffer_info") + std::to_string(i);
+		buffer_name_c_str = buffer_name.c_str();
+		CreateMapping(&sharedMemBuffer_curves_info[i], buffer_name_c_str, handles_curves[i], buffer_size_curves);
+		
+		buffer_name = std::string("curves_buffer_normal") + std::to_string(i);
+		buffer_name_c_str = buffer_name.c_str();
+		CreateMapping(&sharedMemBuffer_curves_normal[i], buffer_name_c_str, handles_curves[i], buffer_size_curves);
+
+		buffer_name = std::string("particles_buffer") + std::to_string(i);
+		buffer_name_c_str = buffer_name.c_str();
+		CreateMapping(&sharedMemBuffer_particles[i], buffer_name_c_str, handles_particles[i], buffer_size_particles);
+
+	}
+	
+	std::string buffer_name = std::string("mouse_buffer");
+	const char *buffer_name_c_str = buffer_name.c_str();
+	CreateMapping(&sharedMemMouse, buffer_name_c_str, mouse_handle, buffer_mouse_size);
+
+	buffer_name = std::string("info_buffer");
+	buffer_name_c_str = buffer_name.c_str();
+	CreateMapping(&sharedMemInfo, buffer_name_c_str, info_handle, buffer_info_size);
+}
+
+void CloseMapping(HANDLE handle, float **buffer)
+{
+	UnmapViewOfFile(*buffer);
+	CloseHandle(handle);
+}
+
 #include "helpers.h"
+#include "cellpack/cellpack.h"
+
+cellPACK * g_cp;
+
 #include "scenes.h"
 #include "benchmark.h"
 
 void Init(int scene, bool centerCamera = true)
 {
 	RandInit();
+
+	for (size_t i = 0; i < num_shared_buffers_proteins; i++)
+	{
+		handles_proteins.push_back(new HANDLE());
+		sharedMemBuffer_proteins.push_back(new float());
+
+		handles_rotation.push_back(new HANDLE());
+		sharedMemBuffer_rotation.push_back(new float());
+		
+		handles_info.push_back(new HANDLE());
+		sharedMemBuffer_info.push_back(new float());
+		
+		handles_curves.push_back(new HANDLE());
+		sharedMemBuffer_curves.push_back(new float());
+		
+		handles_curves_info.push_back(new HANDLE());
+		sharedMemBuffer_curves_info.push_back(new float());
+		
+		handles_curves_normal.push_back(new HANDLE());
+		sharedMemBuffer_curves_normal.push_back(new float());
+
+		handles_particles.push_back(new HANDLE());
+		sharedMemBuffer_particles.push_back(new float());
+	}
+
+	mouse_handle = new HANDLE();
+	sharedMemMouse = new float();
+
+
+	info_handle = new HANDLE();
+	sharedMemInfo = new float();
+	sharedMemInfo[0] = 0;
+	sharedMemInfo[1] = 0;
+	sharedMemInfo[2] = 0;
+	sharedMemInfo[3] = 0;
+	sharedMemInfo[4] = 0;
+	CreateMappings();
 
 	if (g_solver)
 	{
@@ -920,11 +1131,11 @@ void Init(int scene, bool centerCamera = true)
 		}
 
 		// calculate local rest space positions
-		g_buffers->rigidLocalPositions.resize(g_buffers->rigidOffsets.back());
-		CalculateRigidLocalPositions(&g_buffers->positions[0], &g_buffers->rigidOffsets[0], &g_buffers->rigidTranslations[0], &g_buffers->rigidIndices[0], numRigids, &g_buffers->rigidLocalPositions[0]);
+		//g_buffers->rigidLocalPositions.resize(g_buffers->rigidOffsets.back());
+		//CalculateRigidLocalPositions(&g_buffers->positions[0], &g_buffers->rigidOffsets[0], &g_buffers->rigidTranslations[0], &g_buffers->rigidIndices[0], numRigids, &g_buffers->rigidLocalPositions[0]);
 
 		// set rigidRotations to correct length, probably NULL up until here
-		g_buffers->rigidRotations.resize(g_buffers->rigidOffsets.size() - 1, Quat());
+		//g_buffers->rigidRotations.resize(g_buffers->rigidOffsets.size() - 1, Quat());
 	}
 
 	// unmap so we can start transferring data to GPU
@@ -1823,7 +2034,8 @@ int DoUI()
 
 			if (imguiCheck("Pause", g_pause))
 				g_pause = !g_pause;
-
+			if (imguiCheck("MemSync", g_sync_mem))
+				g_sync_mem = !g_sync_mem;
 			imguiSeparatorLine();
 
 			if (imguiCheck("Wireframe", g_wireframe))
@@ -1875,7 +2087,7 @@ int DoUI()
 
 			imguiSeparatorLine();
 			imguiSlider("Radius", &g_params.radius, 0.01f, 0.5f, 0.01f);
-			imguiSlider("Solid Radius", &g_params.solidRestDistance, 0.0f, 0.5f, 0.001f);
+			imguiSlider("Solid Radius", &g_params.solidRestDistance, 0.01f, 0.5f, 0.01f);
 			imguiSlider("Fluid Radius", &g_params.fluidRestDistance, 0.0f, 0.5f, 0.001f);
 
 			// common params
@@ -1886,7 +2098,7 @@ int DoUI()
 			imguiSlider("Restitution", &g_params.restitution, 0.0f, 1.0f, 0.01f);
 			imguiSlider("SleepThreshold", &g_params.sleepThreshold, 0.0f, 1.0f, 0.01f);
 			imguiSlider("Shock Propagation", &g_params.shockPropagation, 0.0f, 10.0f, 0.01f);
-			imguiSlider("Damping", &g_params.damping, 0.0f, 10.0f, 0.01f);
+			imguiSlider("Damping", &g_params.damping, 0.0f, 30.0f, 0.01f);
 			imguiSlider("Dissipation", &g_params.dissipation, 0.0f, 0.01f, 0.0001f);
 			imguiSlider("SOR", &g_params.relaxationFactor, 0.0f, 5.0f, 0.01f);
 
@@ -1938,6 +2150,238 @@ int DoUI()
 	}
 
 	return newScene;
+}
+
+void UpdateSharedMemRB(int n,int start)
+{
+	//_tprintf(TEXT("UpdateMappedData.\n"));
+	//cout << " nb instances " << g_cp->mInstances.size() << " " << g_buffers->rigidTranslations.size() << endl;
+	int counter = 0; //use to count instances to be shared.
+	for (size_t i = 0; i < shared_buffer_size_proteins; i++)
+	{
+		if ( (i + start) >= g_buffers->rigidTranslations.size() )
+			return;
+		//Vec4 vec = g_buffers->positions[i + start];
+		Vec4 pos = g_buffers->rigidTranslations[i + start];
+		Quat q = g_buffers->rigidRotations[i + start];
+		Vec4 quat = Vec4(q.x, -q.y, -q.z, q.w);
+		Vec3 center = Vec3(0,0,0);
+		//Matrix33 frame(g_buffers->rigidRotations[i + start]);
+		//convertToZ
+		//Matrix33 Z = LeftHand(frame);
+		//Quat q = Quat(Z);
+		float ind = 0;
+		int compId = 0;
+		// cout << " instance size " << g_cp->mInstances.size() << " newi " << (i + start) << endl;
+		if ((i + start) >= g_cp->mInstances.size()) {
+			// this should be use for fiber as protein ingredient.
+			// otherwise maybe use rigidinstance to update control point
+			// cout << "continue because fiber instance size " << g_cp->mInstances.size() << " newi " << (i + start) << endl;
+			continue;
+			int newi = (i + start) - g_cp->mInstances.size();
+			ind = (float)g_cp->mInstancesFiber[newi].mMeshIndex;
+			int nProt = g_cp->iBatches.size();
+			NvFlexExtAsset* asset = g_cp->iBatchesFiber[ind].mAsset;
+			compId = g_cp->iBatchesFiber[ind].compId;
+			center = Vec3(asset->shapeCenters[0], asset->shapeCenters[1], asset->shapeCenters[2]);
+			center = Rotate(q, center);
+			//indice in cellpack is actually ind+nProt
+			ind = ind + nProt;
+		}
+		else {
+			// cout << "protein instance size " << g_cp->mInstances.size() << " newi " << (i + start) << endl;
+			ind = (float)g_cp->mInstances[i + start].mMeshIndex;
+			NvFlexExtAsset* asset = g_cp->iBatches[g_cp->mInstances[i + start].mMeshIndex].mAsset;
+			compId = g_cp->iBatches[g_cp->mInstances[i + start].mMeshIndex].compId;
+			center = Vec3(asset->shapeCenters[0], asset->shapeCenters[1], asset->shapeCenters[2]);
+			center = Rotate(q, center);
+		}
+
+		Vec4 vec = Vec4(-(pos.x - center.x)*(1.0f / g_cp->main_scale),
+					(pos.y - center.y)*(1.0f / g_cp->main_scale),
+					(pos.z - center.z)*(1.0f / g_cp->main_scale), (float)compId); //or ingid ?
+
+		// cout << ind << " " << g_cp->pnames[ind] << " " << q.x << " " << q.y << " " << q.z << " " << q.w << endl;
+		for (size_t j = 0; j < 4; j++)
+		{
+			sharedMemBuffer_proteins[n][counter * 4 + j] = vec[j];
+			sharedMemBuffer_rotation[n][counter * 4 + j] = quat[j];
+			sharedMemBuffer_info[n][counter * 4 + j] = 0.0f;
+			//if (j == 3) sharedMemBuffer_proteins[n][i * 4 + j] = 0;
+		}
+		sharedMemBuffer_info[n][counter * 4 + 0] = ind;
+		counter++;
+	}
+	//cout << " nb instances after " << counter << endl;
+	//sharedMemInfo[0] += counter;
+}
+
+//Z-invert ?
+//could only send the indices?
+void UpdateSharedMemSpring(){
+	//write control point
+	int nRope = g_ropes.size();
+	int indice_buffer = 0;
+	int buffer_value_i = 0;
+	int nfiber_total = 0;
+	std::vector<Vec4> normal;
+	// cout << " nb ropes " << g_ropes.size() << endl;
+	//positions
+	//infos
+	//normals
+	//CPUBuffers.Get.CurveControlPointsInfos.Add(new Vector4(curveId, curveType, positions.Count, 0));
+	for (int r = 0; r < g_ropes.size(); r++){
+		int npts = g_ropes[r].mIndices.size();
+		float cType = (float)g_cp->maks_fiber[r];
+		float cId = (float)r;//segment id
+		int rId = g_ropes[r].ropeOffsetIdStart;
+		//rId is -1 or g_buffers->rigidTranslations.size()
+		int sId = g_ropes[r].ropeInstanceIdStart; // mInstancesFiber.size()
+		// cout << " npoints " << npts << " type " << cType << " id " << cId << " " << g_cp->pnames_fiber[cType]<< " rId " << rId << endl;
+		// normals ?
+		 
+		// normal = GetSmoothNormals(g_ropes[r].mIndices);
+		if (rId!=-1) {
+			// cout << " fibers rogid body rId " << rId << endl;
+			//use the rigid body position as control point
+			//and rotation to get the normal
+			for (int i = 0; i < npts; i++) {
+				Vec4 pos = g_buffers->rigidTranslations[i + rId];
+				Quat q = g_buffers->rigidRotations[i + rId];
+				float ind = (float)g_cp->mInstancesFiber[i + sId].mMeshIndex;
+				NvFlexExtAsset* asset = g_cp->iBatchesFiber[cType].mAsset;
+				int compId = g_cp->iBatchesFiber[cType].compId;
+				Vec3 center = Vec3(asset->shapeCenters[0], asset->shapeCenters[1], asset->shapeCenters[2]);
+				center = Rotate(q, center);
+				Vec4 vec = Vec4(-(pos.x - center.x)*(1.0f / g_cp->main_scale),
+					(pos.y - center.y)*(1.0f / g_cp->main_scale),
+					(pos.z - center.z)*(1.0f / g_cp->main_scale), (float)compId);
+				Vec4 left_norm = Rotate(q, Vec3(0,1,0));
+				Vec4 norm = Vec4(left_norm.x, left_norm.y, left_norm.z, 1.0f);
+				if (buffer_value_i >= shared_buffer_size_curves) {
+					indice_buffer++;
+					buffer_value_i = 0;
+				}
+				for (size_t j = 0; j < 3; j++)
+				{
+					sharedMemBuffer_curves[indice_buffer][buffer_value_i * 4 + j] = vec[j];
+					sharedMemBuffer_curves_normal[indice_buffer][buffer_value_i * 4 + j] = norm[j];// normal[i][j];
+				}
+				sharedMemBuffer_curves[indice_buffer][buffer_value_i * 4 + 3] = cType;
+				sharedMemBuffer_curves_normal[indice_buffer][buffer_value_i * 4 + 3] = 1.0f;
+				//sharedMemBuffer_curves[indice_buffer][buffer_value_i * 5 + 4] = cId;
+				sharedMemBuffer_curves_info[indice_buffer][buffer_value_i * 4 + 0] = cId;			//0
+				sharedMemBuffer_curves_info[indice_buffer][buffer_value_i * 4 + 1] = cType;			//1004
+				sharedMemBuffer_curves_info[indice_buffer][buffer_value_i * 4 + 2] = npts;
+
+				buffer_value_i++;
+				nfiber_total++;
+			}
+
+		}
+		else {
+			for (int i = 0; i < npts; i++) {
+				Vec4 pos = g_buffers->positions[g_ropes[r].mIndices[i]] * (1.0f / g_cp->main_scale);
+				Vec4 norm = g_buffers->normals[g_ropes[r].mIndices[i]];
+				Vec4 vec = Vec4(-pos.x, pos.y, pos.z, cId);
+				//test id buffer. 
+				if (buffer_value_i >= shared_buffer_size_curves) {
+					indice_buffer++;
+					buffer_value_i = 0;
+				}
+				//cout << " indices  " << indice_buffer << " " << (buffer_value_i*5+j) << " " << sharedMemBuffer_curves.size() << endl;
+				//cout << " " << sizeof(sharedMemBuffer_curves[indice_buffer]) << endl;//8 ?
+				for (size_t j = 0; j < 3; j++)
+				{
+					sharedMemBuffer_curves[indice_buffer][buffer_value_i * 4 + j] = vec[j];
+					sharedMemBuffer_curves_normal[indice_buffer][buffer_value_i * 4 + j] = norm[j];// normal[i][j];
+				}
+				sharedMemBuffer_curves[indice_buffer][buffer_value_i * 4 + 3] = cType;
+				sharedMemBuffer_curves_normal[indice_buffer][buffer_value_i * 4 + 3] = 1.0f;
+				//sharedMemBuffer_curves[indice_buffer][buffer_value_i * 5 + 4] = cId;
+				sharedMemBuffer_curves_info[indice_buffer][buffer_value_i * 4 + 0] = cId;			//0
+				sharedMemBuffer_curves_info[indice_buffer][buffer_value_i * 4 + 1] = cType;			//1004
+				sharedMemBuffer_curves_info[indice_buffer][buffer_value_i * 4 + 2] = npts;
+
+				buffer_value_i++;
+				nfiber_total++;
+			}
+		}
+	}
+	sharedMemInfo[2] = nfiber_total;
+}
+
+void UpdateSharedParticles() {
+	int nParticules = int(g_buffers->activeIndices.size());// NvFlexGetActiveCount(g_solver); //g_buffers->positions.size();
+	//const int numParticles = NvFlexGetActiveCount(g_solver);
+	int indice_buffer = 0;
+	int buffer_value_i = 0;
+	//for (int i = 0; i < int(g_buffers->activeIndices.size()); ++i) {
+	for (int i = 0; i < nParticules; i++) {
+		Vec4 pos = g_buffers->positions[i];
+		pos = Vec4(-pos.x, pos.y, pos.z, 1.0f) * (1.0f / g_cp->main_scale);
+		//test id buffer. 
+		if (buffer_value_i >= shared_buffer_size_info) {
+			indice_buffer++;
+			buffer_value_i = 0;
+		}
+		for (size_t j = 0; j < 4; j++)
+		{
+			sharedMemBuffer_particles[indice_buffer][buffer_value_i * 4 + j] = pos[j];
+		}
+		// sharedMemBuffer_particles[indice_buffer][buffer_value_i * 4 + 0] = g_params.radius * (1.0f / g_cp->main_scale);
+		buffer_value_i++;
+	}
+}
+
+void UpdateSharedMemBuffersInfo()
+{
+	//update info
+	sharedMemInfo[0] = (float)g_cp->mInstances.size();// g_buffers->rigidTranslations.size();
+	sharedMemInfo[1] = (float)g_ropes.size();
+	sharedMemInfo[2] = 0;
+	sharedMemInfo[3] = (float)(g_buffers->activeIndices.size());//NvFlexGetActiveCount(g_solver);
+	sharedMemInfo[4] = (!g_pause || g_step) ? 0 : 1;
+}
+
+void UpdateSharedMemBuffers()
+{
+	UpdateSharedMemBuffersInfo();
+	// sharedMemInfo[0] = 0.0f; //
+	if (sharedMemInfo[3] != 0)
+	{
+		for (size_t i = 0; i < num_shared_buffers_proteins; i++)
+		{
+			int start_id = i * shared_buffer_size_proteins;
+			if (start_id >= g_buffers->rigidTranslations.size())
+				break;
+			UpdateSharedMemRB(i, start_id);
+		}
+		UpdateSharedMemSpring();
+		//update the particles 
+		UpdateSharedParticles();
+		// cout << " nb instances after " << sharedMemInfo[0] << endl;
+	}
+	else {
+		//force the update of particles/rigid body/springs.
+		g_cp->updateFromBinaryBuffer();
+	}
+	/*
+	if (use_shared_mouse) {
+		int b = (int)sharedMemMouse[0];
+		float x = (float)sharedMemMouse[2];
+		float y = (float)sharedMemMouse[3];
+		float z = (float)sharedMemMouse[4];
+		int mid = (int)sharedMemMouse[1];
+		if (sharedMemMouse[1] < 0)
+			mid = 0;
+		//cout << "read in " << b << " " << x << " " << y << " " << z << " " << mid << " " << g_mouseParticle << endl;
+		if ((pbstate != b))
+			MousePick(b, mid, Vec3(x, y, z));
+		g_mousePos = Vec3(x, y, z);
+		pbstate = b;
+	}
+	*/
 }
 
 void UpdateFrame()
@@ -2082,6 +2526,16 @@ void UpdateFrame()
 	RenderDebug();
 
 	int newScene = DoUI();
+	if (g_sync_mem)
+	{
+		if (!g_pause || g_step) {
+			//if ((g_frame%4)==0) 
+			UpdateSharedMemBuffers();
+		}
+		else {
+			UpdateSharedMemBuffersInfo();
+		}
+	}
 
 	EndFrame();
 
@@ -2774,10 +3228,56 @@ void SDLMainLoop()
 
 int main(int argc, char* argv[])
 {
+	cout << " main " << endl;
 	// process command line args
 	for (int i = 1; i < argc; ++i)
 	{
+		cout << " argv " << argv[i]  << endl;
 		int d;
+		float f;
+		if (strcmp(argv[i], "-cellpackmodel") == 0) {
+			g_cp_model = argv[i + 1];
+			cout << " g_cp_model " << argv[i + 1] << endl;
+			//cout << "use model file " << cp_filename << endl;
+		}
+		if (strcmp(argv[i], "-cellpackrecipe") == 0) {
+			g_cp_recipe = argv[i + 1];
+			cout << " g_cp_recipe " << argv[i + 1] << endl;
+			//cout << "use model file " << cp_filename << endl;
+		}
+		if (strcmp(argv[i], "-ignorecomp") == 0) {
+			g_ignore_comp = true;
+			//cout << " g_cp_recipe " << argv[i + 1] << endl;
+			//cout << "use model file " << cp_filename << endl;
+		}
+		if (sscanf(argv[i], "-radius=%f", &f)) {
+			g_radius = f;
+		}
+		if (sscanf(argv[i], "-mb=%f", &f)) {
+			g_mb = f;
+		}
+		if (sscanf(argv[i], "-scale=%f", &f)) {
+			g_scale = f;
+		}
+		if (sscanf(argv[i], "-winding ") == 0) {
+			g_winding = true;
+		}
+		if (strcmp(argv[i], "-shared_memory") == 0) {
+			g_sync_mem = true;
+		}
+		if (sscanf(argv[i], "-lod_to_use=%d", &d)) {
+			g_lod_to_use = d;
+		}
+		if (sscanf(argv[i], "-dna_persistence=%d", &d)) {
+			g_dna_persistence = d;
+		}
+		if (sscanf(argv[i], "-force_not_center=%d", &d)) {
+			g_force_not_center = d;
+		}
+		if (sscanf(argv[i], "-fusepart=%d", &d)) {
+			g_use_partners_properties = d;
+		}
+		
 		if (sscanf(argv[i], "-device=%d", &d))
 			g_device = d;
 
@@ -2872,8 +3372,19 @@ int main(int argc, char* argv[])
 		}
 	}
 
+	cout << " g_scenes " << endl;
 	// opening scene
-	g_scenes.push_back(new PotPourri("Pot Pourri"));
+	// g_scenes.push_back(new PotPourri("Pot Pourri"));
+	g_scenes.push_back(new Mycoplasma("cellPACK"));
+	g_scenes.push_back(new Inflatable("Inflatables"));
+	
+	g_scenes.push_back(new DNAplectoneme("DNAplectoneme"));
+
+	//g_scenes.push_back(new NanoCage("NanoCage"));
+	g_scenes.push_back(new Actine("Actine"));
+	g_scenes.push_back(new HIVIntegrase("HIVIntegrase"));
+
+
 
 	// soft body scenes
 	SoftBody::Instance octopus("../../data/softs/octopus.obj");
@@ -3027,6 +3538,7 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(plasticStackScene);
 
 	// collision scenes
+	g_scenes.push_back(new SDFCollision("SDFCollision"));
 	g_scenes.push_back(new FrictionRamp("Friction Ramp"));
 	g_scenes.push_back(new FrictionMovingShape("Friction Moving Box", 0));
 	g_scenes.push_back(new FrictionMovingShape("Friction Moving Sphere", 1));
@@ -3043,7 +3555,7 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(new EnvironmentalCloth("Env Cloth Small", 6, 6, 40, 16));
 	g_scenes.push_back(new EnvironmentalCloth("Env Cloth Large", 16, 32, 10, 3));
 	g_scenes.push_back(new FlagCloth("Flag Cloth"));
-	g_scenes.push_back(new Inflatable("Inflatables"));
+
 	g_scenes.push_back(new ClothLayers("Cloth Layers"));
 	g_scenes.push_back(new SphereCloth("Sphere Cloth"));
 	g_scenes.push_back(new Tearing("Tearing"));
@@ -3183,7 +3695,7 @@ int main(int argc, char* argv[])
 	// a regular CUDA context, although creating one through this API
 	// is recommended for best performance.
 	bool success = NvFlexDeviceCreateCudaContext(g_device);
-
+	printf("creating CUDA context.\n");
 	if (!success)
 	{
 		printf("Error creating CUDA context.\n");
@@ -3251,7 +3763,7 @@ int main(int argc, char* argv[])
 		printf("Could not initialize Flex, exiting.\n");
 		exit(-1);
 	}
-
+	printf("initialize Flex\n");
 	// store device name
 	strcpy(g_deviceName, NvFlexGetDeviceName(g_flexLib));
 	printf("Compute Device: %s\n\n", g_deviceName);

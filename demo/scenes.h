@@ -113,3 +113,9 @@ public:
 #include "scenes/triggervolume.h"
 #include "scenes/viscosity.h"
 #include "scenes/waterballoon.h"
+
+#include "cellpack/scenes/mycoplasma.h"
+#include "cellpack/scenes/actine.h"
+//#include "cellpack/scenes/nanocage.h"
+#include "cellpack/scenes/hivintegrase.h"
+#include "cellpack/scenes/dnaplectoneme.h"

@@ -145,3 +145,17 @@ CUDA_CALLABLE inline XVector3<T> Min(const XVector3<T>& a, const XVector3<T>& b)
 	return XVector3<T>(Min(a.x, b.x), Min(a.y, b.y), Min(a.z, b.z));
 }
 
+CUDA_CALLABLE inline Vec3 X_AXIS()
+{
+	return Vec3(1, 0, 0);
+}
+
+CUDA_CALLABLE inline Vec3 Y_AXIS()
+{
+	return Vec3(0, 1, 0);
+}
+
+CUDA_CALLABLE inline Vec3 Z_AXIS()
+{
+	return Vec3(0, 0, 1);
+}

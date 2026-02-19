@@ -677,6 +677,8 @@ void Mesh::GetBounds(Vector3& outMinExtents, Vector3& outMaxExtents) const
 
     outMinExtents = Vector3(minExtents);
     outMaxExtents = Vector3(maxExtents);
+	m_minExtents = Vector3(minExtents);
+	m_maxExtents = Vector3(maxExtents);
 }
 
 Mesh* CreateTriMesh(float size, float y)

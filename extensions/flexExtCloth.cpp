@@ -181,6 +181,7 @@ NvFlexExtAsset* NvFlexExtCreateClothFromMesh(const float* particles, int numVert
 	}
 	else
 	{
+		std::cout << " cloth inValid! " << std::endl;
 		NvFlexExtDestroyAsset(asset);
 		return NULL;
 	}
@@ -231,9 +232,11 @@ NvFlexExtAsset* NvFlexExtCreateTearingClothFromMesh(const float* particles, int 
 			asset->inflatableStiffness = cloth.mConstraintScale;
 			asset->inflatablePressure = pressure;
 		}
+		std::cout << " cloth.mValid " << std::endl;
 	}
 	else
 	{
+		std::cout << " cloth inValid " << std::endl;
 		NvFlexExtDestroyAsset(asset);
 		return NULL;
 	}

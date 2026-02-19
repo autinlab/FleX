@@ -208,8 +208,11 @@ public:
 			  float bendStiffness, bool tearable=true)
 	{
 		mValid = false;
+		std::cout << " ClothMesh " << numVertices << std::endl;
 
 		mNumVertices = numVertices;
+
+		std::cout << " before  tearable " << std::endl;
 
 		if (tearable)
 		{
@@ -230,11 +233,20 @@ public:
 				Edge& e3 = const_cast<Edge&>(*edges.insert(Edge(indices[i+2], indices[i+0])).first);
 
 				if (!e1.AddTri(triIndex))
+				{
+					std::cout << " whats going on here " << triIndex << std::endl;
 					return;
+				}
 				if (!e2.AddTri(triIndex))
+				{
+					std::cout << " whats going on here " << triIndex << std::endl;
 					return;
+				}
 				if (!e3.AddTri(triIndex))
+				{
+					std::cout << " whats going on here " << triIndex << std::endl;
 					return;
+				}
 			}
 
 			// flatten set to array
@@ -284,6 +296,8 @@ public:
 			}
 		}
 
+		std::cout << " after  tearable " << std::endl;
+		
 		// calculate rest volume
 		mRestVolume = 0.0f;
 		mConstraintScale = 0.0f;
@@ -730,4 +744,7 @@ public:
 	float mConstraintScale;
 
 	bool mValid;
+
+	int particleOffset;
+	int triangleOffset;
 };

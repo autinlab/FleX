@@ -284,7 +284,7 @@ void MakeSDF(const uint32_t* img, uint32_t w, uint32_t h, uint32_t d, float* out
 				assert(output[z*w*h + y*w + x] < FLT_MAX);
 
 				// flip sign for interior
-				output[z*w*h + y*w + x] *= (img[z*w*h + y*w + x]?-1.0f:1.0f)*scale;
+				output[z*w*h + y*w + x] *= (img[z*w*h + y*w + x]?1.0f:-1.0f)*scale;
 			}
 		}
 	}

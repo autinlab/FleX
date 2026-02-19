@@ -750,7 +750,7 @@ void AddTriangleMesh(NvFlexTriangleMeshId mesh, Vec3 translation, Quat rotation,
 	g_buffers->shapeFlags.push_back(NvFlexMakeShapeFlags(eNvFlexShapeTriangleMesh, false));
 }
 
-NvFlexDistanceFieldId CreateSDF(const char* meshFile, int dim, float margin = 0.1f, float expand = 0.0f)
+NvFlexDistanceFieldId CreateSDF(const char* meshFile, int dim, float margin = 0.1f, float expand = 0.0f, float scale = 1.0f)
 {
 	Mesh* mesh = ImportMesh(meshFile);
 
@@ -792,7 +792,10 @@ NvFlexDistanceFieldId CreateSDF(const char* meshFile, int dim, float margin = 0.
 	// cheap collision offset
 	int numVoxels = int(pfm.m_width*pfm.m_height*pfm.m_depth);
 	for (int i = 0; i < numVoxels; ++i)
+	{
 		pfm.m_data[i] += expand;
+		pfm.m_data[i] *= scale;
+	}
 
 	NvFlexVector<float> field(g_flexLib);
 	field.assign(pfm.m_data, pfm.m_width*pfm.m_height*pfm.m_depth);
@@ -1468,6 +1471,141 @@ int CreateLinks(const Vec3* particles, int numParticles, std::vector<int>& outSp
 	return count;
 }
 
+// basic SAP based acceleration structure for point cloud queries
+//taken from flexExtSoft.cpp
+struct SweepAndPrune
+{
+	struct Entry
+	{
+		Entry(Vec3 p, int i) : point(p), index(i) {}
+
+		Vec3 point;
+		int index;
+	};
+
+	SweepAndPrune(const Vec3* points, int n)
+	{
+		entries.reserve(n);
+		for (int i = 0; i < n; ++i)
+			entries.push_back(Entry(points[i], i));
+
+		struct SortOnAxis
+		{
+			int axis;
+
+			SortOnAxis(int axis) : axis(axis) {}
+
+			bool operator()(const Entry& lhs, const Entry& rhs) const
+			{
+				return lhs.point[axis] < rhs.point[axis];
+			}
+		};
+
+		// calculate particle bounds and longest axis
+		Vec3 lower(FLT_MAX), upper(-FLT_MAX);
+		for (int i = 0; i < n; ++i)
+		{
+			lower = Min(points[i], lower);
+			upper = Max(points[i], upper);
+		}
+
+		Vec3 edges = upper - lower;
+
+		if (edges.x > edges.y && edges.x > edges.z)
+			longestAxis = 0;
+		else if (edges.y > edges.z)
+			longestAxis = 1;
+		else
+			longestAxis = 2;
+
+		std::sort(entries.begin(), entries.end(), SortOnAxis(longestAxis));
+	}
+
+	void QuerySphere(Vec3 center, float radius, std::vector<int>& indices)
+	{
+		// find start point in the array
+		int low = 0;
+		int high = int(entries.size());
+
+		// the point we are trying to find
+		float queryLower = center[longestAxis] - radius;
+		float queryUpper = center[longestAxis] + radius;
+
+		// binary search to find the start point in the sorted entries array
+		while (low < high)
+		{
+			const int mid = (high + low) / 2;
+
+			if (queryLower > entries[mid].point[longestAxis])
+				low = mid + 1;
+			else
+				high = mid;
+		}
+
+		// scan forward over potential overlaps
+		float radiusSq = radius * radius;
+
+		for (int i = low; i < int(entries.size()); ++i)
+		{
+			Vec3 p = entries[i].point;
+
+			if (LengthSq(p - center) < radiusSq)
+			{
+				indices.push_back(entries[i].index);
+			}
+			else if (entries[i].point[longestAxis] > queryUpper)
+			{
+				// early out if ther are no more possible candidates
+				break;
+			}
+		}
+	}
+
+	int longestAxis;	// [0,2] -> x,y,z
+
+	std::vector<Entry> entries;
+};
+
+// creates distance constraints between particles within some radius
+int CreateLinksLocal(const float* all_particles, int numParticles, std::vector<int> indices, std::vector<int>& outSpringIndices,
+	std::vector<float>& outSpringLengths, std::vector<float>& outSpringStiffness, float radius, float stiffness = 1.0f, int offset = 0)
+{
+	int count = 0;
+
+	std::vector<Vec3> particles;
+	for (int i = 0; i < numParticles; ++i)
+	{
+		Vec3 localPos = Vec3(&all_particles[(indices[i] + offset) * 4]);
+		particles.push_back(localPos);
+	}
+
+	std::vector<int> neighbors;
+	SweepAndPrune sap(&particles[0], numParticles);
+
+	for (int i = 0; i < numParticles; ++i)
+	{
+		neighbors.resize(0);
+
+		sap.QuerySphere(Vec3(particles[i]), radius, neighbors);
+
+		for (int j = 0; j < int(neighbors.size()); ++j)
+		{
+			const int nj = neighbors[j];
+
+			if (nj != i)
+			{
+				outSpringIndices.push_back(indices[i] + offset);
+				outSpringIndices.push_back(indices[nj] + offset);
+				outSpringLengths.push_back(Length(Vec3(particles[i]) - Vec3(particles[nj])));
+				outSpringStiffness.push_back(stiffness);
+
+				++count;
+			}
+		}
+	}
+	return count;
+}
+
 void CreateSkinning(const Vec3* vertices, int numVertices, const Vec3* clusters, int numClusters, float* outWeights, int* outIndices, float falloff, float maxdist)
 {
 	const int maxBones = 4;
@@ -1757,4 +1895,236 @@ void GetShapeBounds(Vec3& totalLower, Vec3& totalUpper)
 
 	totalLower = totalBounds.lower;
 	totalUpper = totalBounds.upper;
+}
+
+
+//from http://stackoverflow.com/questions/1171849/finding-quaternion-representing-the-rotation-from-one-vector-to-another
+Vec3 orthogonal(Vec3 v)
+{
+	float x = abs(v.x);
+	float y = abs(v.y);
+	float z = abs(v.z);
+	Vec3 other = (x < y) ? ((x < z) ? X_AXIS() : Z_AXIS()) : ((y < z) ? Y_AXIS() : Z_AXIS());
+	return Cross(v, other);
+}
+
+Quat get_rotation_between(Vec3 u, Vec3 v)
+{
+	// It is important that the inputs are of equal length when
+	// calculating the half-way vector.
+	u = u / Length(u);
+	v = v / Length(v);
+	// Unfortunately, we have to check for when u == -v, as u + v
+	// in this case will be (0, 0, 0), which cannot be normalized.
+	if (Length(u + v) == 0)
+	{
+		// 180 degree rotation around any orthogonal vector
+		Vec3 ou = orthogonal(u);
+		Vec3 no = ou/Length(ou);
+		return Quat(no.x, no.y, no.z, 0);
+	}
+	Vec3 halfv = (u + v)/Length(u + v);
+	float w = Dot(u, halfv);
+	Vec3 a = Cross(u, halfv);
+	return Quat(a.x, a.y, a.z, w);
+}
+
+Quat AlignVec3s(Vec3 fixed, Vec3 moving)
+{
+	//return rotation aligning moving to fixed
+	Vec3 axis = Cross(moving / Length(moving), fixed / Length(fixed));
+	float dot = Dot(moving / Length(moving), fixed / Length(fixed));
+	float angle = ACos(dot);
+	return QuatFromAxisAngle(axis, angle);
+}
+
+//https://gist.github.com/aeroson/043001ca12fe29ee911e
+// from http://answers.unity3d.com/questions/467614/what-is-the-source-code-of-quaternionlookrotation.html
+Quat LookRotation(Vec3 forward, Vec3 up)
+{
+
+	forward = forward / Length(forward);
+	Vec3 cr = Cross(up, forward);
+	Vec3 right = cr / Length(cr);
+	up = Cross(forward, right);
+	float m00 = right.x;
+	float m01 = right.y;
+	float m02 = right.z;
+	float m10 = up.x;
+	float m11 = up.y;
+	float m12 = up.z;
+	float m20 = forward.x;
+	float m21 = forward.y;
+	float m22 = forward.z;
+
+	float num8 = (m00 + m11) + m22;
+	Quat quaternion = Quat();
+	if (num8 > 0.0f)
+	{
+		float num = (float)sqrtf(num8 + 1.0f);
+		quaternion.w = num * 0.5f;
+		num = 0.5f / num;
+		quaternion.x = (m12 - m21) * num;
+		quaternion.y = (m20 - m02) * num;
+		quaternion.z = (m01 - m10) * num;
+		return quaternion;
+	}
+	if ((m00 >= m11) && (m00 >= m22))
+	{
+		float num7 = (float)sqrtf(((1.0f + m00) - m11) - m22);
+		float num4 = 0.5f / num7;
+		quaternion.x = 0.5f * num7;
+		quaternion.y = (m01 + m10) * num4;
+		quaternion.z = (m02 + m20) * num4;
+		quaternion.w = (m12 - m21) * num4;
+		return quaternion;
+	}
+	if (m11 > m22)
+	{
+		float num6 = (float)sqrtf(((1.0f + m11) - m00) - m22);
+		float num3 = 0.5f / num6;
+		quaternion.x = (m10 + m01) * num3;
+		quaternion.y = 0.5f * num6;
+		quaternion.z = (m21 + m12) * num3;
+		quaternion.w = (m20 - m02) * num3;
+		return quaternion;
+	}
+	float num5 = (float)sqrtf(((1.0f + m22) - m00) - m11);
+	float num2 = 0.5f / num5;
+	quaternion.x = (m20 + m02) * num2;
+	quaternion.y = (m21 + m12) * num2;
+	quaternion.z = 0.5f * num5;
+	quaternion.w = (m01 - m10) * num2;
+	return quaternion;
+}
+
+Quat LookRotation(Vec3 forward)
+{
+	Vec3 up = Vec3(0,1,0);
+	return LookRotation(forward, up);
+}
+
+float QuatDot(Quat a, Quat b)
+{
+	return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+float QuatAngle(Quat a, Quat b)
+{
+	float radToDeg = (float)(180.0f / M_PI);
+	float f = QuatDot(a, b);
+	return acos(min(abs(f), 1.0f)) * 2.0f * radToDeg;
+}
+
+float QuatLengthSquared (Quat q)
+{
+	return q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+}
+
+Quat SlerpUnclamped(Quat a, Quat b, float t)
+{
+	// if either input is zero, return the other.
+	if (QuatLengthSquared(a) == 0.0f)
+	{
+		if (QuatLengthSquared(b) == 0.0f)
+		{
+			return Quat();
+		}
+		return b;
+	}
+	else if (QuatLengthSquared(b) == 0.0f)
+	{
+		return a;
+	}
+
+
+	float cosHalfAngle = a.w * b.w + Dot(Vec3(a.x,a.y,a.z), Vec3(b.x, b.y, b.z));
+
+	if (cosHalfAngle >= 1.0f || cosHalfAngle <= -1.0f)
+	{
+		// angle = 0.0f, so just return one input.
+		return a;
+	}
+	else if (cosHalfAngle < 0.0f)
+	{
+		b = Quat(-b.x, -b.y, -b.z, -b.w);
+		//b.xyz = -b.xyz;
+		//b.w = -b.w;
+		cosHalfAngle = -cosHalfAngle;
+	}
+
+	float blendA;
+	float blendB;
+	if (cosHalfAngle < 0.99f)
+	{
+		// do proper slerp for big angles
+		float halfAngle = (float)acos(cosHalfAngle);
+		float sinHalfAngle = (float)sin(halfAngle);
+		float oneOverSinHalfAngle = 1.0f / sinHalfAngle;
+		blendA = (float)sin(halfAngle * (1.0f - t)) * oneOverSinHalfAngle;
+		blendB = (float)sin(halfAngle * t) * oneOverSinHalfAngle;
+	}
+	else
+	{
+		// do lerp if angle is really small.
+		blendA = 1.0f - t;
+		blendB = t;
+	}
+
+	Quat result = Quat(blendA * Vec3(a.x, a.y, a.z) + blendB * Vec3(b.x, b.y, b.z), blendA * a.w + blendB * b.w);
+	if (QuatLengthSquared(result) > 0.0f)
+		return Normalize(result);
+	else
+		return Quat();
+}
+
+Quat RotateTowards(Quat from, Quat to, float maxDegreesDelta)
+{
+	float num = QuatAngle(from, to);
+	if (num == 0.0f)
+	{
+		return to;
+	}
+	float t = min(1.0f, maxDegreesDelta / num);
+	return SlerpUnclamped(from, to, t);
+}
+
+Quat FromToRotation(Vec3 fromDirection, Vec3 toDirection)
+{
+	return RotateTowards(LookRotation(fromDirection), LookRotation(toDirection), std::numeric_limits<float>::max());
+}
+
+std::vector<Vec4> GetSmoothNormals(std::vector<int> indices)
+{
+
+	std::vector<Vec4> smoothNormals;
+	Vec3 crossDirection = Vec3(0, 1, 0);
+
+	if (indices.size() < 4) {
+		for (int i = 0; i < indices.size(); i++)
+			smoothNormals.push_back(Vec4(crossDirection, 0));
+		return smoothNormals;
+	}
+
+	Vec3 p0 = Vec3(g_buffers->positions[indices[0]]);
+	Vec3 p1 = Vec3(g_buffers->positions[indices[1]]);
+	Vec3 p2 = Vec3(g_buffers->positions[indices[2]]);
+
+	smoothNormals.push_back(Vec4(Normalize(Cross(p0 - p1, p2 - p1))));
+
+	for (int i = 1; i < indices.size() - 1; i++)
+	{
+		p0 = Vec3(g_buffers->positions[indices[i - 1]]);
+		p1 = Vec3(g_buffers->positions[indices[i]]);
+		p2 = Vec3(g_buffers->positions[indices[i + 1]]);
+
+		Vec3 t = Normalize(p2 - p0);
+		Vec3 b = Normalize(Cross(t, Vec3(smoothNormals.back())));
+		Vec3 n = -Normalize(Cross(t, b));
+
+		smoothNormals.push_back(Vec4(n));
+	}
+
+	smoothNormals.push_back(g_buffers->positions[indices.back()]);
+	return smoothNormals;
 }
