@@ -475,6 +475,7 @@ bool g_drawEllipsoids;
 bool g_drawPoints;
 bool g_drawMesh;
 bool g_drawCloth;
+bool g_drawPlane;
 float g_expandCloth;	// amount to expand cloth along normal (to account for particle radius)
 
 bool g_drawOpaque;
@@ -873,6 +874,7 @@ void Init(int scene, bool centerCamera = true)
 	g_drawEllipsoids = false;
 	g_drawPoints = true;
 	g_drawCloth = true;
+	g_drawPlane = true;
 	g_expandCloth = 0.0f;
 
 	g_drawOpaque = false;
@@ -1621,7 +1623,8 @@ void RenderScene()
 	for (int i = 0; i != passes; i++)
 	{
 
-		DrawPlanes((Vec4*)g_params.planes, g_params.numPlanes, g_drawPlaneBias);
+		if (g_drawPlane)
+			DrawPlanes((Vec4*)g_params.planes, g_params.numPlanes, g_drawPlaneBias);
 
 		if (g_drawMesh)
 			DrawMesh(g_mesh, g_meshColor);
@@ -2052,6 +2055,8 @@ int DoUI()
 				g_drawMesh = !g_drawMesh;
 				g_drawRopes = !g_drawRopes;
 			}
+			if (imguiCheck("Draw Plane", g_drawPlane))
+				g_drawPlane = !g_drawPlane;
 
 			if (imguiCheck("Draw Basis", g_drawBases))
 				g_drawBases = !g_drawBases;
@@ -2062,6 +2067,11 @@ int DoUI()
 			if (imguiCheck("Draw Contacts", g_drawContacts))
 				g_drawContacts = !g_drawContacts;
 
+
+			// slider for light and fog
+			imguiSlider("Light distance", &g_lightDistance, 0.0f, 50.0f, 0.1f);
+			imguiSlider("Fog distance", &g_fogDistance, 0.0f, 50.0f, 0.1f);
+			
 			imguiSeparatorLine();
 
 			// scene options

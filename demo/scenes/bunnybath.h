@@ -8,7 +8,7 @@ public:
 
 	void Initialize()
 	{
-		float radius = 0.14f;
+		float radius = 0.14f*2.0f;
 
 		// deforming bunny
 		float s = radius*0.5f;
@@ -46,8 +46,8 @@ public:
 
 		if (mDam)
 		{
-			CreateParticleGrid(Vec3(0.0f, 0.0f, 0.0f), 64, 64, 64, restDistance, Vec3(0.0f), 1.0f, false, 0.0f, NvFlexMakePhase(0, eNvFlexPhaseSelfCollide | eNvFlexPhaseFluid), 0.005f);
-			g_lightDistance *= 0.5f;
+			CreateParticleGrid(Vec3(0.0f, 0.0f, 0.0f), 32, 32, 32, restDistance, Vec3(0.0f), 1.0f, false, 0.0f, NvFlexMakePhase(0, eNvFlexPhaseSelfCollide | eNvFlexPhaseFluid), 0.005f);
+			g_lightDistance *= 2.5f;
 		}
 
 		g_sceneLower = Vec3(0.0f);
@@ -83,6 +83,7 @@ public:
 
 		g_lightDistance = 1.8f;
 
+		g_clearColor = Vec3(1.0f);
 		g_params.numPlanes = 5;
 
 		g_waveFloorTilt = 0.0f;
@@ -91,7 +92,8 @@ public:
 		
 		g_warmup = true;
 
-		// draw options		
+		// draw options
+		g_drawPlane = false;
 		g_drawPoints = false;
 		g_drawEllipsoids = true;
 		g_drawDiffuse = true;
