@@ -229,6 +229,7 @@ Mesh* ImportMeshFromPly(const char* path)
     const uint32_t kMaxProperties = 16;
     uint32_t numProperties = 0; 
     float properties[kMaxProperties];
+    string propertyNames[kMaxProperties];
 
     bool vertexElement = false;
 
@@ -272,7 +273,19 @@ Mesh* ImportMeshFromPly(const char* path)
         else if (strcmp(buffer, "property") == 0)
         {
             if (vertexElement)
-                ++numProperties;
+            {
+                char typeName[kMaxLineLength];
+                char propName[kMaxLineLength];
+
+                file >> typeName;
+                file >> propName;
+
+                if (numProperties < kMaxProperties)
+                {
+                    propertyNames[numProperties] = propName;
+                    ++numProperties;
+                }
+            }
         }
         else if (strcmp(buffer, "end_header") == 0)
         {
@@ -298,6 +311,23 @@ Mesh* ImportMeshFromPly(const char* path)
     mesh->m_indices.reserve(numFaces*3);
 
     // read vertices
+    int colorIndexR = -1;
+    int colorIndexG = -1;
+    int colorIndexB = -1;
+    int colorIndexA = -1;
+
+    for (uint32_t i = 0; i < numProperties; ++i)
+    {
+        if (propertyNames[i] == "red" || propertyNames[i] == "r")
+            colorIndexR = int(i);
+        else if (propertyNames[i] == "green" || propertyNames[i] == "g")
+            colorIndexG = int(i);
+        else if (propertyNames[i] == "blue" || propertyNames[i] == "b")
+            colorIndexB = int(i);
+        else if (propertyNames[i] == "alpha" || propertyNames[i] == "a")
+            colorIndexA = int(i);
+    }
+
     for (uint32_t v=0; v < numVertices; ++v)
     {
         for (uint32_t i=0; i < numProperties; ++i)
@@ -307,6 +337,25 @@ Mesh* ImportMeshFromPly(const char* path)
 
         mesh->m_positions[v] = Point3(properties[0], properties[1], properties[2]);
         mesh->m_normals[v] = Vector3(0.0f, 0.0f, 0.0f);
+
+        if (colorIndexR >= 0 && colorIndexG >= 0 && colorIndexB >= 0)
+        {
+            float r = properties[colorIndexR];
+            float g = properties[colorIndexG];
+            float b = properties[colorIndexB];
+            float a = (colorIndexA >= 0) ? properties[colorIndexA] : 255.0f;
+
+            // Common PLY files store colors as 0..255 uchar values; accept normalized input too.
+            if (r > 1.0f || g > 1.0f || b > 1.0f || a > 1.0f)
+            {
+                r *= 1.0f / 255.0f;
+                g *= 1.0f / 255.0f;
+                b *= 1.0f / 255.0f;
+                a *= 1.0f / 255.0f;
+            }
+
+            mesh->m_colours[v] = Colour(r, g, b, a);
+        }
     }
 
     // read indices
